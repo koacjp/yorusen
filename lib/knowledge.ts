@@ -39,11 +39,32 @@ export interface KnowledgeEntry {
   createdAt?: string;
 }
 
+export interface PhilosophyEntry {
+  id: string;
+  title: string;
+  description: string;
+  core?: string;
+  principles?: string[];
+  framework?: string;
+  signs_of_not_picking_up?: string[];
+  mental_note?: string;
+  tips?: string[];
+  factors?: string[];
+  key_insight?: string;
+  self_evaluation?: string;
+  how_to?: string[];
+  core_rule?: string;
+  risk_mechanism?: string[];
+  exception?: string;
+  money_advice?: string;
+}
+
 export interface AllKnowledge {
   customer_types: CustomerTypeEntry[];
   situations: SituationEntry[];
   mental: MentalEntry[];
   custom: KnowledgeEntry[];
+  philosophy: PhilosophyEntry[];
 }
 
 const DATA_DIR = path.join(process.cwd(), 'data', 'knowledge');
@@ -81,12 +102,17 @@ export function loadAllKnowledge(): AllKnowledge {
     'custom.json',
     { custom: [] }
   );
+  const philosophyData = readJsonFile<{ philosophy: PhilosophyEntry[] }>(
+    'philosophy.json',
+    { philosophy: [] }
+  );
 
   return {
     customer_types: customerTypesData.customer_types ?? [],
     situations: situationsData.situations ?? [],
     mental: mentalData.mental ?? [],
     custom: customData.custom ?? [],
+    philosophy: philosophyData.philosophy ?? [],
   };
 }
 
@@ -201,6 +227,34 @@ export function searchKnowledge(query: string): KnowledgeResult[] {
             ...entry.tips.slice(0, 2),
             ...entry.scripts,
           ],
+        },
+      });
+    }
+  }
+
+  for (const entry of knowledge.philosophy) {
+    const text = [
+      entry.title, entry.description, entry.core, entry.core_rule,
+      ...(entry.principles ?? []), ...(entry.tips ?? []),
+      ...(entry.factors ?? []), ...(entry.how_to ?? []),
+      ...(entry.signs_of_not_picking_up ?? []),
+      entry.mental_note, entry.key_insight,
+    ].filter(Boolean).join(' ');
+    const score = scoreEntry(text, keywords);
+    if (score > 0) {
+      const content = [
+        entry.core ?? entry.core_rule,
+        ...(entry.principles ?? entry.tips ?? entry.how_to ?? []).slice(0, 3),
+        entry.mental_note ?? entry.key_insight,
+      ].filter((x): x is string => Boolean(x));
+      results.push({
+        score,
+        result: {
+          category: 'philosophy',
+          id: entry.id,
+          title: entry.title,
+          description: entry.description,
+          relevantContent: content,
         },
       });
     }
