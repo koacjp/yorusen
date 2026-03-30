@@ -1,11 +1,14 @@
 import { buildSystemPrompt } from "@/lib/prompts";
 import { searchKnowledge, buildKnowledgePrompt } from "@/lib/knowledge";
+import Anthropic from "@anthropic-ai/sdk";
 import type { CastProfile, Customer } from "@/lib/types";
 
-// Groq Llama 3.3 70B 全員統一（¥0.026/回）
-// Anthropic APIは不使用
+// Primary: Groq Llama 3.3 70B（安い）
+// Fallback: Anthropic Claude Haiku（Groqが429のとき）
 
-function streamResponse(body: ReadableStream<Uint8Array>) {
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+function streamGroqResponse(body: ReadableStream<Uint8Array>) {
   const encoder = new TextEncoder();
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -41,6 +44,28 @@ function streamResponse(body: ReadableStream<Uint8Array>) {
   return new Response(readable, { headers: { "Content-Type": "text/plain; charset=utf-8", "Transfer-Encoding": "chunked" } });
 }
 
+async function fallbackToAnthropic(systemPrompt: string, message: string): Promise<Response> {
+  const encoder = new TextEncoder();
+  const readable = new ReadableStream({
+    async start(controller) {
+      try {
+        const stream = anthropic.messages.stream({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 1024,
+          system: systemPrompt,
+          messages: [{ role: "user", content: message }],
+        });
+        for await (const chunk of stream) {
+          if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
+            controller.enqueue(encoder.encode(chunk.delta.text.replace(/\*\*/g, "")));
+          }
+        }
+      } finally { controller.close(); }
+    },
+  });
+  return new Response(readable, { headers: { "Content-Type": "text/plain; charset=utf-8", "Transfer-Encoding": "chunked" } });
+}
+
 export async function POST(req: Request) {
   const body = await req.json();
   const { message, castProfile, customer } = body as {
@@ -62,40 +87,22 @@ export async function POST(req: Request) {
     if (knowledgePrompt) systemPrompt += knowledgePrompt;
   } catch { /* ナレッジ検索失敗時はそのまま続行 */ }
 
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message },
-      ],
-      max_tokens: 1024,
-      stream: true,
-    }),
+  const groqBody = JSON.stringify({
+    model: "llama-3.3-70b-versatile",
+    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: message }],
+    max_tokens: 1024,
+    stream: true,
   });
 
-  // 429 レート制限: 2秒待ってリトライ1回
-  if (res.status === 429) {
-    await new Promise((r) => setTimeout(r, 2000));
-    const retry = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: message }], max_tokens: 1024, stream: true }),
-    });
-    if (retry.ok && retry.body) return streamResponse(retry.body);
-    return new Response("少し混んでるみたい。もう一度試してみて！", { status: 503 });
-  }
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, "Content-Type": "application/json" },
+    body: groqBody,
+  });
 
-  if (!res.ok || !res.body) {
-    const errText = await res.text().catch(() => "no body");
-    console.error(`[advice] Groq error ${res.status}: ${errText}`);
-    return new Response("エラーが発生しました。もう一度試してみて！", { status: 500 });
-  }
+  if (res.ok && res.body) return streamGroqResponse(res.body);
 
-  return streamResponse(res.body);
+  // Groq失敗 → Anthropic Haiku にフォールバック
+  console.warn(`[advice] Groq ${res.status} → fallback to Anthropic`);
+  return fallbackToAnthropic(systemPrompt, message);
 }
