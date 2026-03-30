@@ -45,25 +45,14 @@ function streamGroqResponse(body: ReadableStream<Uint8Array>) {
 }
 
 async function fallbackToAnthropic(systemPrompt: string, message: string): Promise<Response> {
-  const encoder = new TextEncoder();
-  const readable = new ReadableStream({
-    async start(controller) {
-      try {
-        const stream = anthropic.messages.stream({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 1024,
-          system: systemPrompt,
-          messages: [{ role: "user", content: message }],
-        });
-        for await (const chunk of stream) {
-          if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
-            controller.enqueue(encoder.encode(chunk.delta.text.replace(/\*\*/g, "")));
-          }
-        }
-      } finally { controller.close(); }
-    },
+  const msg = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 1024,
+    system: systemPrompt,
+    messages: [{ role: "user", content: message }],
   });
-  return new Response(readable, { headers: { "Content-Type": "text/plain; charset=utf-8", "Transfer-Encoding": "chunked" } });
+  const text = msg.content[0].type === "text" ? msg.content[0].text.replace(/\*\*/g, "") : "";
+  return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
 export async function POST(req: Request) {
