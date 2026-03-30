@@ -56,42 +56,47 @@ async function fallbackToAnthropic(systemPrompt: string, message: string): Promi
 }
 
 export async function POST(req: Request) {
-  const body = await req.json();
-  const { message, castProfile, customer } = body as {
-    message: unknown;
-    castProfile?: CastProfile | null;
-    customer?: Customer | null;
-    isPremium?: boolean;
-  };
-
-  if (!message || typeof message !== "string" || message.trim() === "") {
-    return new Response("メッセージを入力してください", { status: 400 });
-  }
-
-  let systemPrompt = buildSystemPrompt(castProfile, customer);
-
   try {
-    const knowledgeResults = searchKnowledge(message);
-    const knowledgePrompt = buildKnowledgePrompt(knowledgeResults);
-    if (knowledgePrompt) systemPrompt += knowledgePrompt;
-  } catch { /* ナレッジ検索失敗時はそのまま続行 */ }
+    const body = await req.json();
+    const { message, castProfile, customer } = body as {
+      message: unknown;
+      castProfile?: CastProfile | null;
+      customer?: Customer | null;
+      isPremium?: boolean;
+    };
 
-  const groqBody = JSON.stringify({
-    model: "llama-3.3-70b-versatile",
-    messages: [{ role: "system", content: systemPrompt }, { role: "user", content: message }],
-    max_tokens: 1024,
-    stream: true,
-  });
+    if (!message || typeof message !== "string" || message.trim() === "") {
+      return new Response("メッセージを入力してください", { status: 400 });
+    }
 
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, "Content-Type": "application/json" },
-    body: groqBody,
-  });
+    let systemPrompt = buildSystemPrompt(castProfile, customer);
 
-  if (res.ok && res.body) return streamGroqResponse(res.body);
+    try {
+      const knowledgeResults = searchKnowledge(message);
+      const knowledgePrompt = buildKnowledgePrompt(knowledgeResults);
+      if (knowledgePrompt) systemPrompt += knowledgePrompt;
+    } catch { /* ナレッジ検索失敗時はそのまま続行 */ }
 
-  // Groq失敗 → Anthropic Haiku にフォールバック
-  console.warn(`[advice] Groq ${res.status} → fallback to Anthropic`);
-  return fallbackToAnthropic(systemPrompt, message);
+    const groqBody = JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: message }],
+      max_tokens: 1024,
+      stream: true,
+    });
+
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, "Content-Type": "application/json" },
+      body: groqBody,
+    });
+
+    if (res.ok && res.body) return streamGroqResponse(res.body);
+
+    // Groq失敗 → Anthropic Haiku にフォールバック
+    console.warn(`[advice] Groq ${res.status} → fallback to Anthropic`);
+    return fallbackToAnthropic(systemPrompt, message);
+  } catch (err) {
+    console.error("[advice] unexpected error:", err);
+    return new Response("エラーが発生しました。もう一度試してみて！", { status: 500 });
+  }
 }
