@@ -97,6 +97,6 @@ export async function POST(req: Request) {
     return fallbackToAnthropic(systemPrompt, message);
   } catch (err) {
     console.error("[advice] unexpected error:", err);
-    return new Response("エラーが発生しました。もう一度試してみて！", { status: 500 });
+    return new Response("混み合っています。少し待ってから試してみて！", { status: 503 });
   }
 }
